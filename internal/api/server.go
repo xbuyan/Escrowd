@@ -65,7 +65,7 @@ func Start() {
 	}
 
 	fmt.Printf("Escrowd API running on http://localhost:%s\n", port)
-	if err := http.ListenAndServe(":"+port, mux); err != nil {
+	if err := http.ListenAndServe("0.0.0.0:"+port, mux); err != nil {
 		fmt.Println("server error:", err)
 	}
 }
