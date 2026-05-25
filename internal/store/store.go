@@ -201,3 +201,7 @@ func (s *Store) DeleteUserData(userID string) (int, error) {
 
 	return anonymized, nil
 }
+
+func (s *Store) MigrateUsers() error {
+	return s.migrateUsers()
+}
