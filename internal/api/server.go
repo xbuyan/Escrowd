@@ -44,6 +44,18 @@ func Start() {
 	// Public routes — no auth required
 	mux.HandleFunc("/api/auth/register", withCORS(handleRegister))
 	mux.HandleFunc("/api/auth/login", withCORS(handleLogin))
+	mux.HandleFunc("/", withCORS(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			jsonError(w, "not found", http.StatusNotFound)
+			return
+		}
+		jsonOK(w, map[string]string{
+			"service": "escrowd-api",
+			"version": "1.0.0",
+			"status":  "running",
+			"frontend": "https://xbuyan.github.io/escrowd-web/",
+		})
+	}))
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
