@@ -2,6 +2,7 @@ package api
 
 import (
 	"escrowd/internal/escrow"
+	"escrowd/internal/validator"
 	"fmt"
 	"net/http"
 	"strings"
@@ -101,6 +102,13 @@ func listDeals(w http.ResponseWriter, r *http.Request) {
 
 func getDealHandler(w http.ResponseWriter, r *http.Request, id string) {
 	userID, _ := userFromRequest(r)
+
+	// Validate deal ID format
+	if err := validator.ValidateID(id); err != nil {
+		jsonError(w, "invalid deal ID", http.StatusBadRequest)
+		return
+	}
+
 	deal, err := db.Get(id)
 	if err != nil {
 		jsonError(w, "deal not found", http.StatusNotFound)
@@ -129,6 +137,7 @@ func getDealHandler(w http.ResponseWriter, r *http.Request, id string) {
 
 func createDeal(w http.ResponseWriter, r *http.Request) {
 	userID, userName := userFromRequest(r)
+
 	var body struct {
 		Role         string `json:"role"`
 		Counterparty string `json:"counterparty"`
@@ -142,111 +151,253 @@ func createDeal(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
-	if body.Title == "" || body.Counterparty == "" || body.Amount == "" {
-		jsonError(w, "title, counterparty, and amount are required", http.StatusBadRequest)
+
+	// Sanitise
+	body.Title = strings.TrimSpace(body.Title)
+	body.Counterparty = strings.TrimSpace(body.Counterparty)
+	body.Description = strings.TrimSpace(body.Description)
+	body.Currency = strings.TrimSpace(body.Currency)
+
+	// Validate title
+	if body.Title == "" {
+		jsonError(w, "title is required", http.StatusBadRequest)
 		return
 	}
+	if len(body.Title) > 100 {
+		jsonError(w, "title too long — maximum 100 characters", http.StatusBadRequest)
+		return
+	}
+
+	// Validate description
+	if len(body.Description) > 1000 {
+		jsonError(w, "description too long — maximum 1000 characters", http.StatusBadRequest)
+		return
+	}
+
+	// Validate counterparty
+	if err := validator.ValidateName(body.Counterparty); err != nil {
+		jsonError(w, "invalid counterparty: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Validate currency
+	allowed := map[string]bool{"XLM": true, "KES": true, "USD": true}
+	if !allowed[body.Currency] {
+		jsonError(w, "currency must be XLM, KES, or USD", http.StatusBadRequest)
+		return
+	}
+
+	// Validate role
+	if body.Role != "buyer" && body.Role != "seller" {
+		jsonError(w, "role must be buyer or seller", http.StatusBadRequest)
+		return
+	}
+
+	// Validate amount
 	var amountInt int
 	fmt.Sscanf(body.Amount, "%d", &amountInt)
-	if amountInt <= 0 {
-		jsonError(w, "amount must be greater than zero", http.StatusBadRequest)
+	if err := validator.ValidateAmount(amountInt); err != nil {
+		jsonError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+
+	// Rate limit check
+	if !limiter.Allow(userID) {
+		jsonError(w, "rate limit exceeded — maximum 10 operations per hour", http.StatusTooManyRequests)
+		return
+	}
+
 	senderID, senderName := userID, userName
 	receiverID, receiverName := body.Counterparty, body.Counterparty
 	if body.Role == "seller" {
 		senderID, senderName = body.Counterparty, body.Counterparty
 		receiverID, receiverName = userID, userName
 	}
+
 	deal := escrow.New(senderID, senderName, receiverID, receiverName, amountInt, "web-init")
 	if err := db.Save(deal); err != nil {
 		jsonError(w, "could not save deal", http.StatusInternalServerError)
 		return
 	}
+
 	auditLog.Record(deal.ID, "deal_created", userID, userName,
 		fmt.Sprintf("Created via web: %s %s %s", body.Title, body.Amount, body.Currency))
+
 	jsonOK(w, toResponse(deal, userID))
 }
 
 func claimDeal(w http.ResponseWriter, r *http.Request, id string) {
 	userID, userName := userFromRequest(r)
+
+	if err := validator.ValidateID(id); err != nil {
+		jsonError(w, "invalid deal ID", http.StatusBadRequest)
+		return
+	}
+
+	if !limiter.Allow(userID) {
+		jsonError(w, "rate limit exceeded", http.StatusTooManyRequests)
+		return
+	}
+
 	deal, err := db.Get(id)
 	if err != nil {
 		jsonError(w, "deal not found", http.StatusNotFound)
 		return
 	}
+
+	// Only the receiver (buyer) can mark complete
+	if deal.ReceiverID != userID {
+		jsonError(w, "only the buyer can mark a deal complete", http.StatusForbidden)
+		return
+	}
+
 	if err := escrow.Claim(&deal, ""); err != nil {
 		jsonError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+
 	if err := db.Save(deal); err != nil {
 		jsonError(w, "could not save deal", http.StatusInternalServerError)
 		return
 	}
+
 	auditLog.Record(id, "deal_claimed", userID, userName, "Marked complete via web")
 	jsonOK(w, toResponse(deal, userID))
 }
 
 func refundDeal(w http.ResponseWriter, r *http.Request, id string) {
 	userID, userName := userFromRequest(r)
+
+	if err := validator.ValidateID(id); err != nil {
+		jsonError(w, "invalid deal ID", http.StatusBadRequest)
+		return
+	}
+
+	if !limiter.Allow(userID) {
+		jsonError(w, "rate limit exceeded", http.StatusTooManyRequests)
+		return
+	}
+
 	deal, err := db.Get(id)
 	if err != nil {
 		jsonError(w, "deal not found", http.StatusNotFound)
 		return
 	}
+
+	// Only the sender (buyer) can request refund
+	if deal.SenderID != userID {
+		jsonError(w, "only the buyer can request a refund", http.StatusForbidden)
+		return
+	}
+
 	if err := escrow.Refund(&deal); err != nil {
 		jsonError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+
 	if err := db.Save(deal); err != nil {
 		jsonError(w, "could not save deal", http.StatusInternalServerError)
 		return
 	}
+
 	auditLog.Record(id, "deal_refunded", userID, userName, "Refund via web")
 	jsonOK(w, toResponse(deal, userID))
 }
 
 func raiseDispute(w http.ResponseWriter, r *http.Request, id string) {
 	userID, userName := userFromRequest(r)
+
+	if err := validator.ValidateID(id); err != nil {
+		jsonError(w, "invalid deal ID", http.StatusBadRequest)
+		return
+	}
+
+	if !limiter.Allow(userID) {
+		jsonError(w, "rate limit exceeded", http.StatusTooManyRequests)
+		return
+	}
+
 	var body struct {
 		Reason string `json:"reason"`
 	}
 	decode(r, &body)
+	body.Reason = strings.TrimSpace(body.Reason)
+
+	if err := validator.ValidateReason(body.Reason); err != nil {
+		jsonError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
 	deal, err := db.Get(id)
 	if err != nil {
 		jsonError(w, "deal not found", http.StatusNotFound)
 		return
 	}
+
+	// Only participants can raise a dispute
+	if deal.SenderID != userID && deal.ReceiverID != userID {
+		jsonError(w, "you are not a participant in this deal", http.StatusForbidden)
+		return
+	}
+
 	if err := escrow.RaiseDispute(&deal, userID, userName, body.Reason); err != nil {
 		jsonError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+
 	if err := db.Save(deal); err != nil {
 		jsonError(w, "could not save deal", http.StatusInternalServerError)
 		return
 	}
+
 	auditLog.Record(id, "dispute_raised", userID, userName, body.Reason)
 	jsonOK(w, toResponse(deal, userID))
 }
 
 func submitEvidence(w http.ResponseWriter, r *http.Request, id string) {
 	userID, userName := userFromRequest(r)
+
+	if err := validator.ValidateID(id); err != nil {
+		jsonError(w, "invalid deal ID", http.StatusBadRequest)
+		return
+	}
+
+	if !limiter.Allow(userID) {
+		jsonError(w, "rate limit exceeded", http.StatusTooManyRequests)
+		return
+	}
+
 	var body struct {
 		Text string `json:"text"`
 	}
-	if err := decode(r, &body); err != nil || body.Text == "" {
-		jsonError(w, "evidence text is required", http.StatusBadRequest)
+	if err := decode(r, &body); err != nil {
+		jsonError(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
+	body.Text = strings.TrimSpace(body.Text)
+
+	if err := validator.ValidateReason(body.Text); err != nil {
+		jsonError(w, "evidence text: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
 	deal, err := db.Get(id)
 	if err != nil {
 		jsonError(w, "deal not found", http.StatusNotFound)
 		return
 	}
+
+	// Only participants can submit evidence
+	if deal.SenderID != userID && deal.ReceiverID != userID {
+		jsonError(w, "you are not a participant in this deal", http.StatusForbidden)
+		return
+	}
+
 	if deal.Status != escrow.StatusDisputed {
 		jsonError(w, "deal is not disputed", http.StatusBadRequest)
 		return
 	}
+
 	auditLog.Record(id, "evidence_submitted", userID, userName, body.Text)
 	jsonOK(w, map[string]string{"status": "evidence recorded"})
 }
@@ -305,7 +456,7 @@ func buildTimeline(deal escrow.Escrow) []TimelineStep {
 	case escrow.StatusRefunded:
 		steps = append(steps, TimelineStep{Label: "Refunded", Sub: "Funds returned to buyer", State: "done"})
 	case escrow.StatusResolved:
-		steps = append(steps, TimelineStep{Label: "Expired", Sub: "Deal resolved by admin", State: "warn"})
+		steps = append(steps, TimelineStep{Label: "Resolved", Sub: "Deal resolved by admin", State: "done"})
 	}
 	return steps
 }
