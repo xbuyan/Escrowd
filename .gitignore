@@ -1,21 +1,15 @@
+
+backups/
 # Compiled binaries
+data/
+data-audit/
+.DS_Store
+.env
+# Environment variables
+.env.local
 escrowd
 *.exe
-
 # macOS
-.DS_Store
-
-# VS Code
+start.sh
 .vscode/
-
-# Environment variables
-.env
-data/
-.env
-backups/
-start.sh
-.env.local
-data-audit/
-data-audit/
-.env.local
-start.sh
+# VS Code
