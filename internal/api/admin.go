@@ -33,13 +33,21 @@ func handleAdminDeals(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			continue
 		}
+		title := deal.Title
+		if title == "" {
+			title = fmt.Sprintf("Deal #%s", deal.ID[:8])
+		}
+		currency := deal.Currency
+		if currency == "" {
+			currency = "XLM"
+		}
 		deals = append(deals, AdminDealResponse{
 			ID:       deal.ID,
-			Title:    fmt.Sprintf("Deal #%s", deal.ID[:8]),
+			Title:    title,
 			Buyer:    deal.SenderName,
 			Seller:   deal.ReceiverName,
 			Amount:   fmt.Sprintf("%d", deal.Amount),
-			Currency: "XLM",
+			Currency: currency,
 			Status:   string(deal.Status),
 		})
 	}
@@ -72,28 +80,32 @@ func handleAdminResolve(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "resolution must be 'buyer' or 'seller'", http.StatusBadRequest)
 		return
 	}
+
+	body.Note = strings.TrimSpace(body.Note)
+	if len(body.Note) > 1000 {
+		jsonError(w, "note too long — maximum 1000 characters", http.StatusBadRequest)
+		return
+	}
+
 	userID, userName := userFromRequest(r)
-	deal, err := db.Get(id)
+
+	updated, err := db.UpdateWithLock(id, func(deal *escrow.Escrow) error {
+		if deal.Status != escrow.StatusDisputed {
+			return fmt.Errorf("deal is not disputed")
+		}
+		if body.Resolution == "buyer" {
+			return escrow.Refund(deal)
+		}
+		return escrow.Claim(deal, "")
+	})
 	if err != nil {
-		jsonError(w, "deal not found", http.StatusNotFound)
+		jsonError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if deal.Status != escrow.StatusDisputed {
-		jsonError(w, "deal is not disputed", http.StatusBadRequest)
-		return
-	}
-	if body.Resolution == "buyer" {
-		escrow.Refund(&deal)
-	} else {
-		escrow.Claim(&deal, "")
-	}
-	if err := db.Save(deal); err != nil {
-		jsonError(w, "could not save deal", http.StatusInternalServerError)
-		return
-	}
+
 	detail := fmt.Sprintf("Resolved in favour of %s. Note: %s", body.Resolution, body.Note)
 	auditLog.Record(id, "dispute_resolved", userID, userName, detail)
-	jsonOK(w, map[string]string{"status": "resolved", "resolution": body.Resolution, "deal_id": id})
+	jsonOK(w, map[string]string{"status": "resolved", "resolution": body.Resolution, "deal_id": updated.ID})
 }
 
 func handleAdminAudit(w http.ResponseWriter, r *http.Request) {

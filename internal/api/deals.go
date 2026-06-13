@@ -1,7 +1,9 @@
 package api
 
 import (
+	"escrowd/internal/email"
 	"escrowd/internal/escrow"
+	"escrowd/internal/stellar"
 	"escrowd/internal/validator"
 	"fmt"
 	"net/http"
@@ -12,6 +14,7 @@ import (
 type DealResponse struct {
 	ID               string         `json:"id"`
 	Title            string         `json:"title"`
+	Description      string         `json:"description"`
 	Role             string         `json:"role"`
 	Counterparty     string         `json:"counterparty"`
 	Amount           string         `json:"amount"`
@@ -20,6 +23,8 @@ type DealResponse struct {
 	Expires          string         `json:"expires"`
 	StellarBalanceID string         `json:"stellar_balance_id,omitempty"`
 	StellarTxHash    string         `json:"stellar_tx_hash,omitempty"`
+	InviteToken      string         `json:"invite_token,omitempty"`
+	ReceiverJoined   bool           `json:"receiver_joined"`
 	Timeline         []TimelineStep `json:"timeline"`
 	Evidence         []EvidenceItem `json:"evidence,omitempty"`
 }
@@ -71,6 +76,33 @@ func handleDealByID(w http.ResponseWriter, r *http.Request) {
 		raiseDispute(w, r, id)
 	case r.Method == http.MethodPost && action == "evidence":
 		submitEvidence(w, r, id)
+	case r.Method == http.MethodPost && action == "fund":
+		fundDeal(w, r, id)
+	default:
+		jsonError(w, "not found", http.StatusNotFound)
+	}
+}
+
+// handleInvite handles GET /api/invites/:token (view invite) and
+// POST /api/invites/:token/accept (join the deal).
+func handleInvite(w http.ResponseWriter, r *http.Request) {
+	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+	// parts = ["api", "invites", "{token}"] or ["api", "invites", "{token}", "accept"]
+	if len(parts) < 3 {
+		jsonError(w, "invalid path", http.StatusBadRequest)
+		return
+	}
+	token := parts[2]
+	action := ""
+	if len(parts) >= 4 {
+		action = parts[3]
+	}
+
+	switch {
+	case r.Method == http.MethodGet && action == "":
+		viewInvite(w, r, token)
+	case r.Method == http.MethodPost && action == "accept":
+		acceptInvite(w, r, token)
 	default:
 		jsonError(w, "not found", http.StatusNotFound)
 	}
@@ -103,7 +135,6 @@ func listDeals(w http.ResponseWriter, r *http.Request) {
 func getDealHandler(w http.ResponseWriter, r *http.Request, id string) {
 	userID, _ := userFromRequest(r)
 
-	// Validate deal ID format
 	if err := validator.ValidateID(id); err != nil {
 		jsonError(w, "invalid deal ID", http.StatusBadRequest)
 		return
@@ -114,6 +145,13 @@ func getDealHandler(w http.ResponseWriter, r *http.Request, id string) {
 		jsonError(w, "deal not found", http.StatusNotFound)
 		return
 	}
+
+	// Only participants can view full deal details
+	if deal.SenderID != userID && deal.ReceiverID != userID {
+		jsonError(w, "you are not a participant in this deal", http.StatusForbidden)
+		return
+	}
+
 	entries, _ := db.AuditDB.GetByEscrow(id)
 	var evidence []EvidenceItem
 	for _, e := range entries {
@@ -135,6 +173,12 @@ func getDealHandler(w http.ResponseWriter, r *http.Request, id string) {
 	jsonOK(w, resp)
 }
 
+// createDeal creates a new escrow deal. The actual title, description, and
+// currency typed by the user are stored and returned — no placeholder titles.
+//
+// If counterparty looks like an email address, an invitation email is sent
+// with a unique link. The deal's ReceiverID remains a placeholder until the
+// counterparty clicks the link and joins via acceptInvite.
 func createDeal(w http.ResponseWriter, r *http.Request) {
 	userID, userName := userFromRequest(r)
 
@@ -152,13 +196,11 @@ func createDeal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Sanitise
 	body.Title = strings.TrimSpace(body.Title)
 	body.Counterparty = strings.TrimSpace(body.Counterparty)
 	body.Description = strings.TrimSpace(body.Description)
-	body.Currency = strings.TrimSpace(body.Currency)
+	body.Currency = strings.TrimSpace(strings.ToUpper(body.Currency))
 
-	// Validate title
 	if body.Title == "" {
 		jsonError(w, "title is required", http.StatusBadRequest)
 		return
@@ -167,33 +209,34 @@ func createDeal(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "title too long — maximum 100 characters", http.StatusBadRequest)
 		return
 	}
-
-	// Validate description
 	if len(body.Description) > 1000 {
 		jsonError(w, "description too long — maximum 1000 characters", http.StatusBadRequest)
 		return
 	}
-
-	// Validate counterparty
-	if err := validator.ValidateName(body.Counterparty); err != nil {
-		jsonError(w, "invalid counterparty: "+err.Error(), http.StatusBadRequest)
+	if body.Counterparty == "" {
+		jsonError(w, "counterparty is required", http.StatusBadRequest)
+		return
+	}
+	if len(body.Counterparty) > 100 {
+		jsonError(w, "counterparty value too long", http.StatusBadRequest)
 		return
 	}
 
-	// Validate currency
-	allowed := map[string]bool{"XLM": true, "KES": true, "USD": true}
-	if !allowed[body.Currency] {
+	allowedCurrency := map[string]bool{"XLM": true, "KES": true, "USD": true}
+	// Normalise "KES (M-Pesa)" style input from the frontend
+	if strings.HasPrefix(body.Currency, "KES") {
+		body.Currency = "KES"
+	}
+	if !allowedCurrency[body.Currency] {
 		jsonError(w, "currency must be XLM, KES, or USD", http.StatusBadRequest)
 		return
 	}
 
-	// Validate role
 	if body.Role != "buyer" && body.Role != "seller" {
 		jsonError(w, "role must be buyer or seller", http.StatusBadRequest)
 		return
 	}
 
-	// Validate amount
 	var amountInt int
 	fmt.Sscanf(body.Amount, "%d", &amountInt)
 	if err := validator.ValidateAmount(amountInt); err != nil {
@@ -201,29 +244,219 @@ func createDeal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Rate limit check
 	if !limiter.Allow(userID) {
 		jsonError(w, "rate limit exceeded — maximum 10 operations per hour", http.StatusTooManyRequests)
 		return
 	}
 
+	// Determine sender/receiver. Counterparty is stored as a placeholder
+	// (email or name) until they accept the invitation.
 	senderID, senderName := userID, userName
-	receiverID, receiverName := body.Counterparty, body.Counterparty
+	receiverID, receiverName := "pending:"+body.Counterparty, body.Counterparty
 	if body.Role == "seller" {
-		senderID, senderName = body.Counterparty, body.Counterparty
-		receiverID, receiverName = userID, userName
+		// The current user is the seller (receiver of funds);
+		// counterparty is the buyer who must fund the deal.
+		receiverID, receiverName = senderID, senderName
+		senderID, senderName = "pending:"+body.Counterparty, body.Counterparty
 	}
 
 	deal := escrow.New(senderID, senderName, receiverID, receiverName, amountInt, "web-init")
+	deal.Title = body.Title
+	deal.Description = body.Description
+	deal.Currency = body.Currency
+
+	// If counterparty looks like an email, store it and send an invite
+	counterpartyEmail := ""
+	if emailRegex.MatchString(body.Counterparty) {
+		counterpartyEmail = body.Counterparty
+		deal.ReceiverEmail = counterpartyEmail
+	}
+
 	if err := db.Save(deal); err != nil {
 		jsonError(w, "could not save deal", http.StatusInternalServerError)
 		return
 	}
 
 	auditLog.Record(deal.ID, "deal_created", userID, userName,
-		fmt.Sprintf("Created via web: %s %s %s", body.Title, body.Amount, body.Currency))
+		fmt.Sprintf("Created '%s' for %s %s", deal.Title, body.Amount, deal.Currency))
+
+	// Send invitation email if we have a valid email address
+	if counterpartyEmail != "" {
+		inviteURL := fmt.Sprintf("%s/#/invite/%s", frontendURL(), deal.InviteToken)
+		if err := email.SendDealInviteEmail(counterpartyEmail, userName, deal.Title, inviteURL); err != nil {
+			fmt.Println("warning: could not send invite email:", err)
+		}
+	}
 
 	jsonOK(w, toResponse(deal, userID))
+}
+
+// viewInvite returns basic deal info for someone who has not yet logged in
+// or accepted the invite — used to render an invite preview page.
+// Does not expose sensitive fields.
+func viewInvite(w http.ResponseWriter, r *http.Request, token string) {
+	if len(token) < 5 || len(token) > 100 {
+		jsonError(w, "invalid invite token", http.StatusBadRequest)
+		return
+	}
+
+	deal, err := db.GetByInviteToken(token)
+	if err != nil {
+		jsonError(w, "invite not found or already used", http.StatusNotFound)
+		return
+	}
+
+	if deal.ReceiverJoined {
+		jsonError(w, "this invitation has already been accepted", http.StatusConflict)
+		return
+	}
+
+	jsonOK(w, map[string]any{
+		"title":       deal.Title,
+		"description": deal.Description,
+		"amount":      fmt.Sprintf("%d", deal.Amount),
+		"currency":    deal.Currency,
+		"inviter":     deal.SenderName,
+	})
+}
+
+// acceptInvite is called by an authenticated user who clicked an invite link.
+// It binds their real user ID to the deal's placeholder receiver slot.
+func acceptInvite(w http.ResponseWriter, r *http.Request, token string) {
+	userID, userName := userFromRequest(r)
+
+	if len(token) < 5 || len(token) > 100 {
+		jsonError(w, "invalid invite token", http.StatusBadRequest)
+		return
+	}
+
+	deal, err := db.GetByInviteToken(token)
+	if err != nil {
+		jsonError(w, "invite not found or already used", http.StatusNotFound)
+		return
+	}
+
+	updated, err := db.UpdateWithLock(deal.ID, func(d *escrow.Escrow) error {
+		// Whichever side is still a placeholder ("pending:...") gets bound
+		// to the joining user.
+		if strings.HasPrefix(d.SenderID, "pending:") {
+			if err := escrow.JoinDeal(d, userID, userName); err != nil {
+				return err
+			}
+			d.SenderID = userID
+			d.SenderName = userName
+			d.ReceiverJoined = true
+			return nil
+		}
+		if strings.HasPrefix(d.ReceiverID, "pending:") {
+			return escrow.JoinDeal(d, userID, userName)
+		}
+		return fmt.Errorf("this invitation has already been accepted")
+	})
+	if err != nil {
+		jsonError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	auditLog.Record(updated.ID, "deal_joined", userID, userName,
+		fmt.Sprintf("%s joined the deal via invitation", userName))
+
+	jsonOK(w, toResponse(updated, userID))
+}
+
+// fundDeal triggers the real Stellar claimable balance creation.
+// Called by the buyer (sender) once both parties have joined and the
+// buyer is ready to lock funds on-chain.
+//
+// Requires the buyer to provide their Stellar secret key — this is
+// never stored; it is used only to sign the lock transaction and
+// discarded immediately after.
+func fundDeal(w http.ResponseWriter, r *http.Request, id string) {
+	userID, userName := userFromRequest(r)
+
+	if err := validator.ValidateID(id); err != nil {
+		jsonError(w, "invalid deal ID", http.StatusBadRequest)
+		return
+	}
+
+	var body struct {
+		BuyerSecretKey string `json:"buyer_secret_key"`
+	}
+	if err := decode(r, &body); err != nil || body.BuyerSecretKey == "" {
+		jsonError(w, "buyer_secret_key is required to fund on Stellar", http.StatusBadRequest)
+		return
+	}
+
+	if !limiter.Allow(userID) {
+		jsonError(w, "rate limit exceeded", http.StatusTooManyRequests)
+		return
+	}
+
+	deal, err := db.Get(id)
+	if err != nil {
+		jsonError(w, "deal not found", http.StatusNotFound)
+		return
+	}
+
+	if deal.SenderID != userID {
+		jsonError(w, "only the buyer can fund this deal", http.StatusForbidden)
+		return
+	}
+	if !deal.ReceiverJoined {
+		jsonError(w, "counterparty has not joined this deal yet", http.StatusBadRequest)
+		return
+	}
+	if deal.StellarFunded {
+		jsonError(w, "deal is already funded on Stellar", http.StatusBadRequest)
+		return
+	}
+	if deal.Currency != "XLM" {
+		jsonError(w, "Stellar funding is only available for XLM deals", http.StatusBadRequest)
+		return
+	}
+	if deal.ReceiverStellarAddr == "" {
+		jsonError(w, "counterparty has not set their Stellar address yet", http.StatusBadRequest)
+		return
+	}
+
+	// expirySeconds = time remaining until deal.ExpiresAt
+	expirySeconds := int64(time.Until(deal.ExpiresAt).Seconds())
+	if expirySeconds <= 0 {
+		jsonError(w, "deal has expired and cannot be funded", http.StatusBadRequest)
+		return
+	}
+
+	result, err := stellar.CreateClaimableEscrow(
+		body.BuyerSecretKey,
+		deal.ReceiverStellarAddr,
+		fmt.Sprintf("%d", deal.Amount),
+		expirySeconds,
+	)
+	// Zero the secret key reference immediately — Go strings are immutable
+	// so we cannot wipe memory, but we drop the reference and avoid
+	// logging or storing it anywhere.
+	body.BuyerSecretKey = ""
+
+	if err != nil {
+		jsonError(w, "could not create Stellar claimable balance: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+
+	updated, err := db.UpdateWithLock(id, func(d *escrow.Escrow) error {
+		d.StellarFunded = true
+		d.StellarBalanceID = result.BalanceID
+		d.StellarTxHash = result.TxHash
+		return nil
+	})
+	if err != nil {
+		jsonError(w, "funded on-chain but could not update deal record: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	auditLog.Record(id, "deal_funded", userID, userName,
+		fmt.Sprintf("Funded on Stellar: balance_id=%s tx=%s", result.BalanceID, result.TxHash))
+
+	jsonOK(w, toResponse(updated, userID))
 }
 
 func claimDeal(w http.ResponseWriter, r *http.Request, id string) {
@@ -239,30 +472,23 @@ func claimDeal(w http.ResponseWriter, r *http.Request, id string) {
 		return
 	}
 
-	deal, err := db.Get(id)
+	updated, err := db.UpdateWithLock(id, func(deal *escrow.Escrow) error {
+		if deal.ReceiverID != userID {
+			return fmt.Errorf("only the buyer can mark a deal complete")
+		}
+		return escrow.Claim(deal, "")
+	})
 	if err != nil {
-		jsonError(w, "deal not found", http.StatusNotFound)
-		return
-	}
-
-	// Only the receiver (buyer) can mark complete
-	if deal.ReceiverID != userID {
-		jsonError(w, "only the buyer can mark a deal complete", http.StatusForbidden)
-		return
-	}
-
-	if err := escrow.Claim(&deal, ""); err != nil {
-		jsonError(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	if err := db.Save(deal); err != nil {
-		jsonError(w, "could not save deal", http.StatusInternalServerError)
+		status := http.StatusBadRequest
+		if strings.Contains(err.Error(), "only the buyer") {
+			status = http.StatusForbidden
+		}
+		jsonError(w, err.Error(), status)
 		return
 	}
 
 	auditLog.Record(id, "deal_claimed", userID, userName, "Marked complete via web")
-	jsonOK(w, toResponse(deal, userID))
+	jsonOK(w, toResponse(updated, userID))
 }
 
 func refundDeal(w http.ResponseWriter, r *http.Request, id string) {
@@ -278,30 +504,23 @@ func refundDeal(w http.ResponseWriter, r *http.Request, id string) {
 		return
 	}
 
-	deal, err := db.Get(id)
+	updated, err := db.UpdateWithLock(id, func(deal *escrow.Escrow) error {
+		if deal.SenderID != userID {
+			return fmt.Errorf("only the buyer can request a refund")
+		}
+		return escrow.Refund(deal)
+	})
 	if err != nil {
-		jsonError(w, "deal not found", http.StatusNotFound)
-		return
-	}
-
-	// Only the sender (buyer) can request refund
-	if deal.SenderID != userID {
-		jsonError(w, "only the buyer can request a refund", http.StatusForbidden)
-		return
-	}
-
-	if err := escrow.Refund(&deal); err != nil {
-		jsonError(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	if err := db.Save(deal); err != nil {
-		jsonError(w, "could not save deal", http.StatusInternalServerError)
+		status := http.StatusBadRequest
+		if strings.Contains(err.Error(), "only the buyer") {
+			status = http.StatusForbidden
+		}
+		jsonError(w, err.Error(), status)
 		return
 	}
 
 	auditLog.Record(id, "deal_refunded", userID, userName, "Refund via web")
-	jsonOK(w, toResponse(deal, userID))
+	jsonOK(w, toResponse(updated, userID))
 }
 
 func raiseDispute(w http.ResponseWriter, r *http.Request, id string) {
@@ -328,30 +547,23 @@ func raiseDispute(w http.ResponseWriter, r *http.Request, id string) {
 		return
 	}
 
-	deal, err := db.Get(id)
+	updated, err := db.UpdateWithLock(id, func(deal *escrow.Escrow) error {
+		if deal.SenderID != userID && deal.ReceiverID != userID {
+			return fmt.Errorf("you are not a participant in this deal")
+		}
+		return escrow.RaiseDispute(deal, userID, userName, body.Reason)
+	})
 	if err != nil {
-		jsonError(w, "deal not found", http.StatusNotFound)
-		return
-	}
-
-	// Only participants can raise a dispute
-	if deal.SenderID != userID && deal.ReceiverID != userID {
-		jsonError(w, "you are not a participant in this deal", http.StatusForbidden)
-		return
-	}
-
-	if err := escrow.RaiseDispute(&deal, userID, userName, body.Reason); err != nil {
-		jsonError(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	if err := db.Save(deal); err != nil {
-		jsonError(w, "could not save deal", http.StatusInternalServerError)
+		status := http.StatusBadRequest
+		if strings.Contains(err.Error(), "not a participant") {
+			status = http.StatusForbidden
+		}
+		jsonError(w, err.Error(), status)
 		return
 	}
 
 	auditLog.Record(id, "dispute_raised", userID, userName, body.Reason)
-	jsonOK(w, toResponse(deal, userID))
+	jsonOK(w, toResponse(updated, userID))
 }
 
 func submitEvidence(w http.ResponseWriter, r *http.Request, id string) {
@@ -387,7 +599,6 @@ func submitEvidence(w http.ResponseWriter, r *http.Request, id string) {
 		return
 	}
 
-	// Only participants can submit evidence
 	if deal.SenderID != userID && deal.ReceiverID != userID {
 		jsonError(w, "you are not a participant in this deal", http.StatusForbidden)
 		return
@@ -409,6 +620,11 @@ func toResponse(deal escrow.Escrow, callerID string) DealResponse {
 		role = "Seller"
 		counterparty = deal.SenderName
 	}
+
+	if strings.HasPrefix(counterparty, "pending:") {
+		counterparty = strings.TrimPrefix(counterparty, "pending:") + " (invited)"
+	}
+
 	expires := "Expired"
 	if time.Now().Before(deal.ExpiresAt) {
 		remaining := time.Until(deal.ExpiresAt)
@@ -419,34 +635,63 @@ func toResponse(deal escrow.Escrow, callerID string) DealResponse {
 			expires = fmt.Sprintf("%dh remaining", hours)
 		}
 	}
-	return DealResponse{
+
+	title := deal.Title
+	if title == "" {
+		title = fmt.Sprintf("Deal #%s", deal.ID[:8])
+	}
+
+	resp := DealResponse{
 		ID:               deal.ID,
-		Title:            fmt.Sprintf("Deal #%s", deal.ID[:8]),
+		Title:            title,
+		Description:      deal.Description,
 		Role:             role,
 		Counterparty:     counterparty,
 		Amount:           fmt.Sprintf("%d", deal.Amount),
-		Currency:         "XLM",
+		Currency:         deal.Currency,
 		Status:           string(deal.Status),
 		Expires:          expires,
-		StellarBalanceID: deal.StellarTxHash,
+		StellarBalanceID: deal.StellarBalanceID,
 		StellarTxHash:    deal.StellarTxHash,
+		ReceiverJoined:   deal.ReceiverJoined,
 		Timeline:         buildTimeline(deal),
 	}
+	if resp.Currency == "" {
+		resp.Currency = "XLM"
+	}
+
+	// Only show the invite token to the deal creator (sender) — they're
+	// the one who shares it with the counterparty.
+	if deal.SenderID == callerID && !deal.ReceiverJoined {
+		resp.InviteToken = deal.InviteToken
+	}
+
+	return resp
 }
 
 func buildTimeline(deal escrow.Escrow) []TimelineStep {
 	steps := []TimelineStep{
 		{Label: "Deal created", Sub: deal.CreatedAt.Format("Jan 2, 2006 · 15:04"), State: "done"},
 	}
-	if deal.StellarFunded {
-		steps = append(steps, TimelineStep{Label: "Funds locked on Stellar", Sub: "Claimable balance active", State: "done"})
+
+	if deal.ReceiverJoined {
+		steps = append(steps, TimelineStep{Label: "Counterparty joined", Sub: "Both parties are now linked to this deal", State: "done"})
 	} else {
-		steps = append(steps, TimelineStep{Label: "Awaiting funding", Sub: "Not yet locked on Stellar", State: "active"})
+		steps = append(steps, TimelineStep{Label: "Awaiting counterparty", Sub: "Invitation sent — waiting for them to join", State: "active"})
 	}
+
+	if deal.StellarFunded {
+		steps = append(steps, TimelineStep{Label: "Funds locked on Stellar", Sub: "Claimable balance active on testnet", State: "done"})
+	} else if deal.ReceiverJoined {
+		steps = append(steps, TimelineStep{Label: "Awaiting funding", Sub: "Buyer to lock funds on Stellar", State: "active"})
+	}
+
 	switch deal.Status {
 	case escrow.StatusLocked:
-		steps = append(steps, TimelineStep{Label: "Awaiting delivery", Sub: "Seller to deliver goods", State: "active"})
-		steps = append(steps, TimelineStep{Label: "Confirm receipt", Sub: "Mark complete to release funds", State: "waiting"})
+		if deal.StellarFunded {
+			steps = append(steps, TimelineStep{Label: "Awaiting delivery", Sub: "Seller to deliver goods", State: "active"})
+			steps = append(steps, TimelineStep{Label: "Confirm receipt", Sub: "Mark complete to release funds", State: "waiting"})
+		}
 	case escrow.StatusClaimed:
 		steps = append(steps, TimelineStep{Label: "Delivery confirmed", Sub: "Buyer marked complete", State: "done"})
 		steps = append(steps, TimelineStep{Label: "Funds released", Sub: "Payment sent to seller", State: "done"})
