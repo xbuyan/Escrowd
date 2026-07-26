@@ -19,12 +19,12 @@ import (
 // The BalanceID is the on-chain identifier — store this in PostgreSQL against
 // the deal record. Escrowd never holds the funds; they live on the Stellar ledger.
 type ClaimableEscrow struct {
-	BalanceID  string    // hex-encoded claimable balance ID from Stellar
-	Amount     string    // XLM amount locked
-	Sender     string    // Alice's public key
-	Receiver   string    // Bob's public key
-	ExpiresAt  time.Time // when Alice can reclaim automatically
-	TxHash     string    // Stellar transaction hash for the lock tx
+	BalanceID string    // hex-encoded claimable balance ID from Stellar
+	Amount    string    // XLM amount locked
+	Sender    string    // Alice's public key
+	Receiver  string    // Bob's public key
+	ExpiresAt time.Time // when Alice can reclaim automatically
+	TxHash    string    // Stellar transaction hash for the lock tx
 }
 
 // CreateClaimableEscrow locks XLM on the Stellar ledger as a claimable balance.

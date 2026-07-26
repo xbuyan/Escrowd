@@ -1,11 +1,11 @@
 package api
 
 import (
-	"escrowd/internal/email"
-	"escrowd/internal/escrow"
-	"escrowd/internal/stellar"
-	"escrowd/internal/validator"
 	"fmt"
+	"github.com/xbuyan/Escrowd/internal/email"
+	"github.com/xbuyan/Escrowd/internal/escrow"
+	"github.com/xbuyan/Escrowd/internal/stellar"
+	"github.com/xbuyan/Escrowd/internal/validator"
 	"net/http"
 	"strings"
 	"time"

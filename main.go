@@ -1,9 +1,9 @@
 package main
 
 import (
-	"escrowd/internal/api"
-	"escrowd/internal/bot"
 	"fmt"
+	"github.com/xbuyan/Escrowd/internal/api"
+	"github.com/xbuyan/Escrowd/internal/bot"
 	"os"
 	"sync"
 )

@@ -1,10 +1,10 @@
 package api
 
 import (
-	"escrowd/internal/auth"
-	"escrowd/internal/email"
-	"escrowd/internal/store"
 	"fmt"
+	"github.com/xbuyan/Escrowd/internal/auth"
+	"github.com/xbuyan/Escrowd/internal/email"
+	"github.com/xbuyan/Escrowd/internal/store"
 	"net/http"
 	"os"
 	"regexp"

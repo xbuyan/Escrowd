@@ -4,8 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"escrowd/internal/escrow"
 	"fmt"
+	"github.com/xbuyan/Escrowd/internal/escrow"
 	"os"
 
 	"github.com/jackc/pgx/v5"

@@ -2,8 +2,8 @@ package audit
 
 import (
 	"context"
-	"escrowd/internal/store"
 	"fmt"
+	"github.com/xbuyan/Escrowd/internal/store"
 	"time"
 )
 

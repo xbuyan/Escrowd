@@ -1,13 +1,13 @@
 package api
 
 import (
-	"escrowd/internal/audit"
-	"escrowd/internal/auth"
-	"escrowd/internal/bruteforce"
-	"escrowd/internal/ratelimit"
-	"escrowd/internal/store"
-	"escrowd/internal/watcher"
 	"fmt"
+	"github.com/xbuyan/Escrowd/internal/audit"
+	"github.com/xbuyan/Escrowd/internal/auth"
+	"github.com/xbuyan/Escrowd/internal/bruteforce"
+	"github.com/xbuyan/Escrowd/internal/ratelimit"
+	"github.com/xbuyan/Escrowd/internal/store"
+	"github.com/xbuyan/Escrowd/internal/watcher"
 	"net/http"
 	"os"
 	"strings"

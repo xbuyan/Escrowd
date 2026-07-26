@@ -2,8 +2,8 @@ package escrow
 
 import (
 	"errors"
-	"escrowd/internal/crypto"
 	"fmt"
+	"github.com/xbuyan/Escrowd/internal/crypto"
 	"time"
 
 	"github.com/google/uuid"
@@ -56,9 +56,9 @@ type Escrow struct {
 	StellarBalanceID    string
 
 	// Invitation fields — support deal-sharing between web users
-	InviteToken     string // unique token shared with counterparty
-	ReceiverJoined  bool   // true once counterparty has accepted the invite
-	ReceiverEmail   string // counterparty's email, for sending the invite
+	InviteToken    string // unique token shared with counterparty
+	ReceiverJoined bool   // true once counterparty has accepted the invite
+	ReceiverEmail  string // counterparty's email, for sending the invite
 }
 
 // New creates a new escrow deal. The receiverID/receiverName may be a

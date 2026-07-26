@@ -1,10 +1,10 @@
 package watcher
 
 import (
-	"escrowd/internal/escrow"
-	"escrowd/internal/stellar"
-	"escrowd/internal/store"
 	"fmt"
+	"github.com/xbuyan/Escrowd/internal/escrow"
+	"github.com/xbuyan/Escrowd/internal/stellar"
+	"github.com/xbuyan/Escrowd/internal/store"
 	"time"
 )
 

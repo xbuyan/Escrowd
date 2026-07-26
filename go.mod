@@ -1,4 +1,4 @@
-module escrowd
+module github.com/xbuyan/Escrowd
 
 go 1.26.1
 

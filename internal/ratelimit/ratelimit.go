@@ -3,7 +3,6 @@ package ratelimit
 import (
 	"sync"
 	"time"
-	
 )
 
 type entry struct {

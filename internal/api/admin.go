@@ -1,8 +1,8 @@
 package api
 
 import (
-	"escrowd/internal/escrow"
 	"fmt"
+	"github.com/xbuyan/Escrowd/internal/escrow"
 	"net/http"
 	"strings"
 )
