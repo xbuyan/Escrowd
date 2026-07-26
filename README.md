@@ -42,6 +42,7 @@ go build -o escrowd .
 | `DATABASE_URL` | PostgreSQL connection string |
 | `JWT_SECRET` | Signs/verifies API auth tokens |
 | `DISCORD_TOKEN` | Discord bot login |
+| `ESCROWD_DB_KEY` | 32-byte hex key encrypting each deal's Stellar wallet secret before it's stored (generate with `openssl rand -hex 32`) |
 | `STELLAR_NETWORK` | `testnet` or `public` |
 | `STELLAR_MASTER_SECRET` | Escrow-controlling Stellar account |
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS` | Email verification (registration works without these; email sending fails gracefully and is logged) |
@@ -179,9 +180,6 @@ covered: `deals.go` (the largest handler file), `admin`, most of `bot`
 
 ## Known gaps
 
-- `.env.example` still reflects an earlier BadgerDB-based prototype and
-  doesn't list the current environment variables (see the table above for
-  the accurate list) — needs updating.
 - Deal-lifecycle handlers (`deals.go`) and most of the Discord bot layer
   have no automated tests yet.
 
