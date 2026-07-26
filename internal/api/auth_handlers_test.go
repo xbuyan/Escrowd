@@ -29,6 +29,8 @@ func setupAPITest(t *testing.T) {
 		t.Skip("TEST_DATABASE_URL not set — skipping api integration tests")
 	}
 
+	withJWTSecret(t, "test-secret-do-not-use-in-prod")
+
 	oldURL := os.Getenv("DATABASE_URL")
 	os.Setenv("DATABASE_URL", dbURL)
 	t.Cleanup(func() { os.Setenv("DATABASE_URL", oldURL) })
