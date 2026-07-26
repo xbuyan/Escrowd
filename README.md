@@ -48,6 +48,7 @@ go build -o escrowd .
 | `MPESA_CONSUMER_KEY`, `MPESA_CONSUMER_SECRET`, `MPESA_SHORTCODE`, `MPESA_PASSKEY` | M-Pesa STK push funding |
 | `PAYSTACK_SECRET_KEY` | Paystack payment confirmation (priority dispute resolution) |
 | `ESCROWD_ADMIN_EMAIL` | Grants admin privileges on the API |
+| `ESCROWD_ADMIN_DISCORD_ID` | Discord user ID allowed to run `!escrow resolve` and `!escrow backup` |
 | `API_PORT` | HTTP server port (defaults if unset) |
 | `FRONTEND_URL` | Used in generated invite/verification links |
 
@@ -170,17 +171,19 @@ TEST_DATABASE_URL="postgres://user:pass@localhost:5432/escrowd_test?sslmode=disa
 ```
 
 Test coverage currently covers `auth`, `store`, `crypto`, `escrow`,
-`ratelimit`, `stellar`, `validator`, and the `api` package's middleware and
-auth handlers. Not yet covered: `deals.go` (the largest handler file),
-`admin`, `bot`, `audit`, `backup`, `email`, `mpesa`, `payment`, `watcher`.
+`ratelimit`, `stellar`, `validator`, the `api` package's middleware and
+auth handlers, and the bot's admin-check logic (`bot.isAdmin`). Not yet
+covered: `deals.go` (the largest handler file), `admin`, most of `bot`
+(the Discord command handlers themselves), `audit`, `backup`, `email`,
+`mpesa`, `payment`, `watcher`.
 
 ## Known gaps
 
 - `.env.example` still reflects an earlier BadgerDB-based prototype and
   doesn't list the current environment variables (see the table above for
   the accurate list) — needs updating.
-- Deal-lifecycle handlers (`deals.go`) and the Discord bot layer have no
-  automated tests yet.
+- Deal-lifecycle handlers (`deals.go`) and most of the Discord bot layer
+  have no automated tests yet.
 
 ## License
 

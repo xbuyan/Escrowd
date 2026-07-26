@@ -30,6 +30,14 @@ var limiter *ratelimit.Limiter
 var auditLog *audit.Log
 var shield *bruteforce.Shield
 
+// isAdmin reports whether the given Discord user ID is the configured bot
+// admin. Extracted as its own function so the check itself — not just the
+// handlers built on top of it — has a direct test.
+func isAdmin(discordUserID string) bool {
+	adminID := os.Getenv("ESCROWD_ADMIN_DISCORD_ID")
+	return adminID != "" && discordUserID == adminID
+}
+
 func Start() {
 	var err error
 	db, err = store.New("./data")
@@ -591,7 +599,7 @@ func handleResolve(s *discordgo.Session, m *discordgo.MessageCreate, parts []str
 		return
 	}
 
-	if m.Author.ID != os.Getenv("1398616689976807498") {
+	if !isAdmin(m.Author.ID) {
 		s.ChannelMessageSend(m.ChannelID, "only an escrowd admin can resolve disputes")
 		return
 	}
@@ -695,7 +703,7 @@ func handleForget(s *discordgo.Session, m *discordgo.MessageCreate, parts []stri
 }
 
 func handleBackup(s *discordgo.Session, m *discordgo.MessageCreate, parts []string) {
-	if m.Author.ID != os.Getenv("1398616689976807498") {
+	if !isAdmin(m.Author.ID) {
 		s.ChannelMessageSend(m.ChannelID, "only an escrowd admin can trigger backups")
 		return
 	}
